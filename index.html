@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photo Sharing App</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .upload-container {
+        border: 2px dashed #ccc;
+        padding: 20px;
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .gallery {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .gallery img {
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 5px;
+      }
+      .error {
+        color: red;
+        font-weight: bold;
+      }
+      .gallery-controls {
+        margin-bottom: 15px;
+      }
+      .gallery-controls button {
+        padding: 8px 16px;
+        margin-right: 10px;
+        cursor: pointer;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+      }
+      .gallery-controls button:hover {
+        opacity: 0.8;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Photo Sharing App</h1>
+
+    <div class="upload-container">
+      <h2>Upload an Image</h2>
+      <input type="file" id="uploadFile" accept="image/*" />
+      <button onclick="uploadImage()">Upload</button>
+      <p id="uploadStatus"></p>
+    </div>
+
+    <h2>Gallery</h2>
+    <div class="gallery-controls">
+      <button onclick="displayImages()">Refresh Gallery</button>
+      <button onclick="clearGallery()" style="background-color: #f44336;">
+        Clear Gallery
+      </button>
+    </div>
+    <div id="gallery" class="gallery"></div>
+
+    <script>
+      // Your bucket configuration - replace with your actual bucket names and region
+      const UPLOAD_BUCKET = "photo-sharing1-app-bucket";
+      const THUMBNAIL_BUCKET = "photo-sharing1-thumbnails";
+      const REGION = "eu-west-1";
+
+      // API Gateway URL - replace with your actual API Gateway URL
+      const API_URL =
+        "https://33pfwjids1.execute-api.eu-west-1.amazonaws.com/prod/images";
+
+      // Function to clear the gallery and localStorage
+      function clearGallery() {
+        localStorage.removeItem("uploadedImages");
+        document.getElementById("gallery").innerHTML =
+          "Gallery cleared. Upload new images to see them here.";
+      }
+
+      async function uploadImage() {
+        const fileInput = document.getElementById("uploadFile");
+        const statusElement = document.getElementById("uploadStatus");
+
+        if (!fileInput.files.length) {
+          statusElement.innerHTML =
+            '<span class="error">Please select a file first!</span>';
+          return;
+        }
+
+        const file = fileInput.files[0];
+
+        // Check if file is an image
+        if (!file.type.startsWith("image/")) {
+          statusElement.innerHTML =
+            '<span class="error">Please select an image file!</span>';
+          return;
+        }
+
+        const fileName = Date.now() + "-" + encodeURIComponent(file.name);
+        const uploadUrl = `https://${UPLOAD_BUCKET}.s3.${REGION}.amazonaws.com/${fileName}`;
+
+        statusElement.textContent = "Uploading...";
+
+        try {
+          const response = await fetch(uploadUrl, {
+            method: "PUT",
+            body: file,
+            headers: {
+              "Content-Type": file.type,
+            },
+          });
+
+          if (response.ok) {
+            statusElement.textContent =
+              "Upload successful! Processing image...";
+
+            // Store the thumbnail name in localStorage
+            const thumbName = "thumb-" + fileName;
+            let uploadedImages = JSON.parse(
+              localStorage.getItem("uploadedImages") || "[]"
+            );
+            uploadedImages.unshift(thumbName);
+            localStorage.setItem(
+              "uploadedImages",
+              JSON.stringify(uploadedImages)
+            );
+
+            // Wait for Lambda to process the image
+            setTimeout(() => {
+              displayImages();
+              statusElement.textContent =
+                "Image uploaded and processed successfully!";
+            }, 3000);
+          } else {
+            statusElement.innerHTML = `<span class="error">Upload failed: ${response.status} ${response.statusText}</span>`;
+          }
+        } catch (error) {
+          statusElement.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+        }
+      }
+
+      async function displayImages() {
+        const gallery = document.getElementById("gallery");
+        gallery.innerHTML = "Loading images...";
+
+        try {
+          // Fetch the list of images from the API
+          const response = await fetch(API_URL);
+
+          if (!response.ok) {
+            throw new Error(
+              `API returned ${response.status}: ${response.statusText}`
+            );
+          }
+
+          const data = await response.json();
+
+          gallery.innerHTML = "";
+
+          if (!data.images || data.images.length === 0) {
+            gallery.textContent =
+              "No images found. Upload an image to see it here.";
+            return;
+          }
+
+          // Display each image in the gallery
+          for (const image of data.images) {
+            const imgElement = document.createElement("img");
+            imgElement.src = image.url;
+            imgElement.alt = image.key.replace("thumb-", "");
+            imgElement.width = 150;
+            imgElement.height = 150;
+            imgElement.title = `Uploaded: ${new Date(
+              image.lastModified
+            ).toLocaleString()}`;
+
+            // Add error handling for images that fail to load
+            imgElement.onerror = function () {
+              // Simply remove the image if it fails to load
+              this.parentNode.removeChild(this);
+            };
+
+            gallery.appendChild(imgElement);
+          }
+        } catch (error) {
+          gallery.innerHTML = `<span class="error">Error loading images: ${error.message}</span>`;
+          console.error("Error fetching images:", error);
+
+          // Fallback to showing recently uploaded images from localStorage
+          gallery.innerHTML +=
+            "<p>Falling back to locally tracked uploads:</p>";
+
+          let uploadedImages = JSON.parse(
+            localStorage.getItem("uploadedImages") || "[]"
+          );
+          if (uploadedImages.length > 0) {
+            for (const imageName of uploadedImages) {
+              const imageUrl = `https://${THUMBNAIL_BUCKET}.s3.${REGION}.amazonaws.com/${imageName}`;
+              const imgElement = document.createElement("img");
+              imgElement.src = imageUrl;
+              imgElement.alt = imageName.replace("thumb-", "");
+              imgElement.width = 150;
+              imgElement.height = 150;
+
+              // Add error handling for images that fail to load
+              imgElement.onerror = function () {
+                // Simply remove the image if it fails to load
+                this.parentNode.removeChild(this);
+              };
+
+              gallery.appendChild(imgElement);
+            }
+          } else {
+            gallery.innerHTML += "<p>No locally tracked uploads found.</p>";
+          }
+        }
+      }
+
+      // Load images when the page loads
+      window.onload = displayImages;
+    </script>
+  </body>
+</html>
